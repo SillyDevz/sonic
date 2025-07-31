@@ -375,6 +375,7 @@ class Game {
             ring.update(deltaTime);
         });
         this.enemies.forEach(enemy => enemy.update(deltaTime, this));
+        this.springs.forEach(spring => spring.update(deltaTime));
         this.checkpoints.forEach(checkpoint => checkpoint.update(deltaTime));
         
         this.checkCollisions();
@@ -448,10 +449,18 @@ class Game {
         
         this.springs.forEach(spring => {
             if (this.checkCollision(this.sonic, spring) && !spring.cooldown) {
-                this.sonic.velocity.y = -15;
+                // Springs should always launch at full power, ignoring any existing velocity
+                this.sonic.velocity.y = -22;  // Moderate spring bounce
+                // Add slight forward momentum if moving
+                if (Math.abs(this.sonic.velocity.x) > 0.1) {
+                    this.sonic.velocity.x *= 1.2; // Slight speed boost
+                }
                 spring.activate();
                 this.audioManager.playSpring();
                 this.sonic.spinning = false;
+                this.sonic.isGrounded = false;
+                this.sonic.springLaunched = true;
+                this.sonic.springLaunchTimer = 2000; // Prevent jump input until landing
             }
         });
         
@@ -833,6 +842,8 @@ class Sonic {
         this.coyoteTime = 0;
         this.maxCoyoteTime = 100;
         this.speedBoostPlayed = false;
+        this.springLaunched = false;
+        this.springLaunchTimer = 0;
     }
     
     update(keys, deltaTime, game) {
@@ -884,7 +895,16 @@ class Sonic {
             this.speedBoostPlayed = false;
         }
         
-        if ((keys[' '] || keys['ArrowUp']) && (this.isGrounded || this.coyoteTime < this.maxCoyoteTime)) {
+        // Update spring launch timer
+        if (this.springLaunched) {
+            this.springLaunchTimer -= deltaTime;
+            // Clear spring launch when timer expires or when starting to fall
+            if (this.springLaunchTimer <= 0 || this.velocity.y >= 0) {
+                this.springLaunched = false;
+            }
+        }
+        
+        if ((keys[' '] || keys['ArrowUp']) && (this.isGrounded || this.coyoteTime < this.maxCoyoteTime) && !this.springLaunched) {
             const speedBonus = Math.min(Math.abs(this.velocity.x) * 0.4, 3);
             this.velocity.y = -(this.jumpPower + speedBonus);
             this.spinning = true;
@@ -894,11 +914,11 @@ class Sonic {
             }
         }
         
-        if (!keys[' '] && !keys['ArrowUp'] && this.velocity.y < -2 && !this.isGrounded) {
+        if (!keys[' '] && !keys['ArrowUp'] && this.velocity.y < -2 && !this.isGrounded && !this.springLaunched) {
             this.velocity.y *= 0.85;
         }
         
-        const gravityMultiplier = this.velocity.y < 0 ? 0.9 : 1.1;
+        const gravityMultiplier = this.springLaunched ? 1.0 : (this.velocity.y < 0 ? 0.9 : 1.1);
         this.velocity.y += GRAVITY * gravityMultiplier;
         
         this.x += this.velocity.x * deltaTime * 0.06;
@@ -911,6 +931,7 @@ class Sonic {
             this.velocity.y = 0;
             this.isGrounded = true;
             this.spinning = false;
+            this.springLaunched = false; // Clear spring launch on landing
             if (!wasGrounded && game && game.audioManager) {
                 game.audioManager.playLand();
             }
@@ -926,6 +947,7 @@ class Sonic {
                 this.velocity.y = 0;
                 this.isGrounded = true;
                 this.spinning = false;
+                this.springLaunched = false; // Clear spring launch on landing
                 if (!wasGrounded && game && game.audioManager) {
                     game.audioManager.playLand();
                 }
@@ -1858,13 +1880,13 @@ class Level {
         game.springs.push(new Spring(650, 300));
         game.springs.push(new Spring(1250, 300));
         game.springs.push(new Spring(1800, 300));
-        game.springs.push(new Spring(2550, 180));
+        game.springs.push(new Spring(2550, 140));  // Platform at y=160, spring at platform-20
         game.springs.push(new Spring(3150, 300));
-        game.springs.push(new Spring(3750, 220));
+        game.springs.push(new Spring(3750, 230));   // Platform at y=250, spring at platform-20
         game.springs.push(new Spring(4050, 300));
-        game.springs.push(new Spring(4550, 180));
+        game.springs.push(new Spring(4550, 140));   // Platform at y=160, spring at platform-20
         game.springs.push(new Spring(5150, 300));
-        game.springs.push(new Spring(5500, 170));
+        game.springs.push(new Spring(5500, 130));   // Platform at y=150, spring at platform-20
         game.springs.push(new Spring(5900, 300));
         
         // Checkpoints and goal
