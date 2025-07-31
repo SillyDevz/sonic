@@ -308,6 +308,7 @@ class Game {
         this.enemies = [];
         this.platforms = [];
         this.springs = [];
+        this.speedBoosters = [];
         this.checkpoints = [];
         this.score = 0;
         this.ringCount = 0;
@@ -318,10 +319,17 @@ class Game {
         this.lastCheckpoint = { x: 100, y: 200 };
         this.levelComplete = false;
         this.currentLevel = 1;
+        this.levelLength = 6000;
         
         this.audioManager = new AudioManager();
         this.sonic = new Sonic(100, 200);
         this.player = this.sonic; // Reference for enemies
+        
+        // Initialize level generation system
+        this.levelValidator = new LevelValidator(LEVEL_RULES);
+        this.levelGenerator = new LevelGeneratorSystem(LEVEL_RULES, this.levelValidator);
+        this.debugVisualizer = new DebugVisualizer(canvas, LEVEL_RULES);
+        
         this.level = new Level();
         
         this.setupEventListeners();
@@ -329,11 +337,161 @@ class Game {
     }
     
     init() {
-        this.level.create(this);
+        // Generate level using the new system
+        this.generateLevel();
+        
         this.lastTime = performance.now();
         this.audioManager.playLevelStart();
         this.audioManager.playBackgroundMusic();
         this.gameLoop();
+    }
+    
+    generateLevel() {
+        // Clear existing level data
+        this.rings = [];
+        this.enemies = [];
+        this.platforms = [];
+        this.springs = [];
+        this.speedBoosters = [];
+        this.checkpoints = [];
+        
+        try {
+            // Generate new level
+            const generatedLevel = this.levelGenerator.generateLevel(this.currentLevel, { length: this.levelLength });
+            
+            // Save current level data for debug visualization
+            this.levelGenerator.currentLevelData = generatedLevel.levelData;
+            
+            // Log validation results
+            console.log('Level Validation:', generatedLevel.validation);
+            
+            // Apply generated level data
+            this.applyGeneratedLevel(generatedLevel.levelData);
+            
+            // Set validation results for debug visualization
+            this.debugVisualizer.setValidationResults(generatedLevel.validation);
+        } catch (error) {
+            console.error('Error generating level:', error);
+            // Fallback to basic level
+            this.createBasicLevel();
+        }
+    }
+    
+    createBasicLevel() {
+        // Create a simple fallback level
+        console.log('Creating basic fallback level');
+        
+        // Add some basic platforms (ensure they're after spawn)
+        this.platforms.push(new Platform(400, 250, 200, 20));
+        this.platforms.push(new Platform(700, 200, 150, 20));
+        this.platforms.push(new Platform(1000, 250, 200, 20));
+        
+        // Add speed boosters on the ground (GROUND_HEIGHT = 320)
+        this.speedBoosters.push(new SpeedBooster(480, 300)); // On ground
+        this.speedBoosters.push(new SpeedBooster(750, 180)); // On second platform
+        this.speedBoosters.push(new SpeedBooster(1080, 300)); // On ground
+        
+        // Add some rings
+        for (let i = 0; i < 10; i++) {
+            this.rings.push(new Ring(300 + i * 50, 200));
+        }
+        
+        // Add a checkpoint and goal
+        this.checkpoints.push(new Checkpoint(2000, 250, false));
+        this.checkpoints.push(new Checkpoint(3000, 250, true));
+    }
+    
+    applyGeneratedLevel(levelData) {
+        // Convert generated platforms to game platforms
+        for (const platformData of levelData.platforms) {
+            const platform = new Platform(
+                platformData.x - platformData.width/2,
+                platformData.y,
+                platformData.width,
+                platformData.height
+            );
+            
+            // Apply type-specific properties
+            if (platformData.type === 'moving' && platformData.path) {
+                platform.originalX = platform.x;
+                platform.originalY = platform.y;
+                platform.path = platformData.path;
+                platform.speed = platformData.speed;
+                platform.currentPathIndex = 0;
+                platform.direction = 1;
+            }
+            
+            this.platforms.push(platform);
+        }
+        
+        // Convert generated enemies to game enemies
+        for (const enemyData of levelData.enemies) {
+            let enemy;
+            
+            switch (enemyData.type) {
+                case 'basic':
+                    enemy = new WalkingRobot(enemyData.x, enemyData.y);
+                    break;
+                case 'flying':
+                    enemy = new FlyingBee(enemyData.x, enemyData.y);
+                    break;
+                case 'shielded':
+                    enemy = new ShieldRobot(enemyData.x, enemyData.y);
+                    break;
+                case 'projectile':
+                    enemy = new SpikeBall(enemyData.x, enemyData.y);
+                    break;
+                default:
+                    enemy = new WalkingRobot(enemyData.x, enemyData.y);
+            }
+            
+            // Apply generated properties
+            if (enemy) {
+                enemy.health = enemyData.health;
+                enemy.maxHealth = enemyData.maxHealth;
+                enemy.speed = enemyData.speed;
+                enemy.damage = enemyData.damage;
+                enemy.points = enemyData.points;
+                this.enemies.push(enemy);
+            }
+        }
+        
+        // Convert generated rings to game rings
+        for (const ringData of levelData.rings) {
+            const ring = new Ring(ringData.x, ringData.y);
+            ring.type = ringData.type;
+            
+            if (ringData.type === 'super') {
+                ring.value = ringData.value;
+                ring.glowRadius = ringData.glowRadius;
+            } else if (ringData.type === 'magnet') {
+                ring.value = ringData.value;
+                ring.magnetRadius = ringData.magnetRadius;
+            }
+            
+            this.rings.push(ring);
+        }
+        
+        // Convert generated jump pads to springs
+        for (const jumpPadData of levelData.jumpPads) {
+            const spring = new Spring(jumpPadData.x, jumpPadData.y);
+            spring.force = jumpPadData.force || jumpPadData.forceY;
+            spring.forceX = jumpPadData.forceX || 0;
+            spring.type = jumpPadData.type;
+            this.springs.push(spring);
+        }
+        
+        // Convert generated checkpoints
+        for (let i = 0; i < levelData.checkpoints.length; i++) {
+            const checkpointData = levelData.checkpoints[i];
+            const isGoal = false; // Don't make any of the generated checkpoints the goal
+            const checkpoint = new Checkpoint(checkpointData.x, checkpointData.y, isGoal);
+            this.checkpoints.push(checkpoint);
+        }
+        
+        // Always add goal at the end of the level
+        const groundHeight = 320; // GROUND_HEIGHT constant
+        this.checkpoints.push(new Checkpoint(levelData.length - 200, groundHeight - 80, true));
     }
     
     setupEventListeners() {
@@ -347,6 +505,16 @@ class Game {
                 this.audioManager.setVolume(this.audioManager.masterVolume + 0.1);
             } else if (e.key === '-' || e.key === '_') {
                 this.audioManager.setVolume(this.audioManager.masterVolume - 0.1);
+            }
+            
+            // Debug visualizer controls
+            if (e.key === 'd' || e.key === 'D') {
+                this.debugVisualizer.handleKeyPress(e.key);
+            }
+            
+            // Debug options 1-8
+            if (e.key >= '1' && e.key <= '8') {
+                this.debugVisualizer.handleKeyPress(e.key);
             }
             
             e.preventDefault();
@@ -376,6 +544,7 @@ class Game {
         });
         this.enemies.forEach(enemy => enemy.update(deltaTime, this));
         this.springs.forEach(spring => spring.update(deltaTime));
+        this.speedBoosters.forEach(booster => booster.update(deltaTime));
         this.checkpoints.forEach(checkpoint => checkpoint.update(deltaTime));
         
         this.checkCollisions();
@@ -383,17 +552,58 @@ class Game {
     }
     
     checkCollisions() {
+        // Handle magnet rings first
+        this.rings.forEach(ring => {
+            if (!ring.collected && ring.type === 'magnet' && ring.magnetRadius > 0) {
+                const distance = Math.sqrt(
+                    Math.pow(this.sonic.x - ring.x, 2) + 
+                    Math.pow(this.sonic.y - ring.y, 2)
+                );
+                
+                if (distance < ring.magnetRadius) {
+                    // Attract nearby rings
+                    this.rings.forEach(otherRing => {
+                        if (otherRing !== ring && !otherRing.collected) {
+                            const ringDist = Math.sqrt(
+                                Math.pow(otherRing.x - this.sonic.x, 2) + 
+                                Math.pow(otherRing.y - this.sonic.y, 2)
+                            );
+                            if (ringDist < ring.magnetRadius) {
+                                // Move ring toward Sonic
+                                const angle = Math.atan2(
+                                    this.sonic.y - otherRing.y,
+                                    this.sonic.x - otherRing.x
+                                );
+                                otherRing.x += Math.cos(angle) * 5;
+                                otherRing.y += Math.sin(angle) * 5;
+                            }
+                        }
+                    });
+                }
+            }
+        });
+        
         this.rings = this.rings.filter(ring => {
             if (!ring.collected && ring.collectDelay <= 0 && this.checkCollision(this.sonic, ring)) {
                 ring.collected = true;
-                this.ringCount++;
-                this.score += 10;
-                this.audioManager.playRingCollect();
+                
+                // Add ring value (special rings worth more)
+                const ringValue = ring.value || 1;
+                this.ringCount += ringValue;
+                this.score += 10 * ringValue;
+                
+                // Play different sounds for special rings
+                if (ring.type === 'super' || ring.type === 'magnet') {
+                    // Use extra life sound for special rings
+                    this.audioManager.playExtraLife();
+                } else {
+                    this.audioManager.playRingCollect();
+                }
                 
                 // Check for extra life at 100 rings
                 if (this.ringCount >= 100) {
                     this.lives++;
-                    this.ringCount = 0;
+                    this.ringCount -= 100; // Keep extra rings
                     this.audioManager.playExtraLife();
                 }
                 
@@ -448,19 +658,52 @@ class Game {
         });
         
         this.springs.forEach(spring => {
-            if (this.checkCollision(this.sonic, spring) && !spring.cooldown) {
-                // Springs should always launch at full power, ignoring any existing velocity
-                this.sonic.velocity.y = -22;  // Moderate spring bounce
-                // Add slight forward momentum if moving
-                if (Math.abs(this.sonic.velocity.x) > 0.1) {
-                    this.sonic.velocity.x *= 1.2; // Slight speed boost
+            if (this.checkCollision(this.sonic, spring) && spring.activate()) {
+                // Apply spring forces based on type
+                if (spring.type === 'vertical') {
+                    this.sonic.velocity.y = -(spring.forceY || spring.force || 20);
+                    // Maintain horizontal momentum
+                    if (Math.abs(this.sonic.velocity.x) > 0.1) {
+                        this.sonic.velocity.x *= 1.1; // Slight speed boost
+                    }
+                } else if (spring.type === 'horizontal') {
+                    this.sonic.velocity.x = spring.forceX || 15;
+                    this.sonic.velocity.y = -5; // Small upward boost
+                } else if (spring.type === 'diagonal') {
+                    this.sonic.velocity.x = spring.forceX || 10;
+                    this.sonic.velocity.y = -(spring.forceY || 15);
                 }
-                spring.activate();
+                
                 this.audioManager.playSpring();
                 this.sonic.spinning = false;
                 this.sonic.isGrounded = false;
                 this.sonic.springLaunched = true;
-                this.sonic.springLaunchTimer = 2000; // Prevent jump input until landing
+                this.sonic.springLaunchTimer = 1500; // Prevent jump input briefly
+            }
+        });
+        
+        // Check speed booster collisions
+        this.speedBoosters.forEach(booster => {
+            // Simple collision check
+            if (this.sonic.x < booster.x + booster.width &&
+                this.sonic.x + this.sonic.width > booster.x &&
+                this.sonic.y < booster.y + booster.height &&
+                this.sonic.y + this.sonic.height > booster.y) {
+                
+                console.log("Sonic touching booster! Can activate:", !booster.used);
+                
+                if (booster.activate()) {
+                    // Apply speed boost
+                    const oldVelocity = this.sonic.velocity.x;
+                    this.sonic.velocity.x = 12; // Fixed boost speed
+                    this.sonic.facing = 1;
+                    this.sonic.running = true;
+                    this.sonic.speedBoostPlayed = true;
+                    this.sonic.speedBoostTimer = 200;
+                    
+                    console.log("BOOST! Old velocity:", oldVelocity, "New velocity:", this.sonic.velocity.x);
+                    this.audioManager.playSpeedBoost();
+                }
             }
         });
         
@@ -555,6 +798,7 @@ class Game {
         this.enemies = [];
         this.platforms = [];
         this.springs = [];
+        this.speedBoosters = [];
         this.checkpoints = [];
         
         // Increment level
@@ -575,10 +819,8 @@ class Game {
         this.sonic.velocity = { x: 0, y: 0 };
         this.camera.x = 0;
         
-        // Create new level (for now, recreate the same level)
-        // In a full game, you'd have different level layouts
-        this.level = new Level();
-        this.level.create(this);
+        // Generate new level with the level generator
+        this.generateLevel();
         
         // Play level start sound
         this.audioManager.playLevelStart();
@@ -615,6 +857,7 @@ class Game {
         
         this.level.render(ctx, this.camera);
         this.platforms.forEach(platform => platform.render(ctx));
+        this.speedBoosters.forEach(booster => booster.render(ctx));
         this.checkpoints.forEach(checkpoint => checkpoint.render(ctx));
         this.springs.forEach(spring => spring.render(ctx));
         this.enemies.forEach(enemy => enemy.render(ctx));
@@ -633,6 +876,19 @@ class Game {
         
         // Draw custom HUD
         this.drawHUD(ctx);
+        
+        // Draw debug visualizer
+        if (this.debugVisualizer) {
+            this.debugVisualizer.updateCamera(this.sonic.x, this.sonic.y);
+            this.debugVisualizer.render({
+                platforms: this.platforms,
+                enemies: this.enemies,
+                rings: this.rings,
+                jumpPads: this.springs,
+                checkpoints: this.checkpoints,
+                sections: (this.levelGenerator && this.levelGenerator.currentLevelData) ? this.levelGenerator.currentLevelData.sections : []
+            }, this.sonic);
+        }
         
         // Draw level complete message
         if (this.levelComplete) {
@@ -844,17 +1100,48 @@ class Sonic {
         this.speedBoostPlayed = false;
         this.springLaunched = false;
         this.springLaunchTimer = 0;
+        this.speedBoostTimer = 0;
     }
     
     update(keys, deltaTime, game) {
+        // Don't allow movement if level is complete
+        if (game && game.levelComplete) {
+            // Still apply gravity so Sonic lands properly
+            this.velocity.y += GRAVITY;
+            this.y += this.velocity.y * deltaTime * 0.06;
+            
+            // Ground collision
+            if (this.y + this.height >= GROUND_HEIGHT) {
+                this.y = GROUND_HEIGHT - this.height;
+                this.velocity.y = 0;
+                this.isGrounded = true;
+            }
+            
+            // Stop horizontal movement
+            this.velocity.x *= 0.9;
+            if (Math.abs(this.velocity.x) < 0.1) {
+                this.velocity.x = 0;
+            }
+            this.x += this.velocity.x * deltaTime * 0.06;
+            return;
+        }
+        
+        // Update boost timer
+        if (this.speedBoostTimer > 0) {
+            this.speedBoostTimer -= deltaTime;
+        }
+        
         const accel = this.isGrounded ? this.acceleration : this.airAcceleration;
         const decel = this.isGrounded ? this.deceleration : this.airDeceleration;
         
+        // Input handling with boost dampening
         if (keys['ArrowLeft']) {
+            // During boost timer, reduce left input effectiveness
+            const inputMultiplier = this.speedBoostTimer > 0 ? 0.3 : 1.0;
             if (this.velocity.x > 0) {
                 this.velocity.x *= 0.85;
             }
-            this.velocity.x -= accel * deltaTime;
+            this.velocity.x -= accel * deltaTime * inputMultiplier;
             this.facing = -1;
             this.running = true;
         } else if (keys['ArrowRight']) {
@@ -865,7 +1152,13 @@ class Sonic {
             this.facing = 1;
             this.running = true;
         } else {
-            this.velocity.x *= decel;
+            // If speed boosted, decelerate more slowly
+            if (this.speedBoostPlayed && Math.abs(this.velocity.x) > this.maxSpeed * 2) {
+                this.velocity.x *= 0.98; // Much slower deceleration when boosted
+            } else {
+                this.velocity.x *= decel;
+                this.speedBoostPlayed = false; // Clear boost flag when slowed down enough
+            }
             if (Math.abs(this.velocity.x) < 0.1) {
                 this.velocity.x = 0;
                 this.running = false;
@@ -883,7 +1176,9 @@ class Sonic {
             this.animationFrame = 0;
         }
         
-        this.velocity.x = Math.max(-this.maxSpeed, Math.min(this.maxSpeed, this.velocity.x));
+        // Limit velocity, but allow boost to exceed normal max
+        const speedLimit = this.speedBoostTimer > 0 ? 15 : this.maxSpeed;
+        this.velocity.x = Math.max(-speedLimit, Math.min(speedLimit, this.velocity.x));
         
         // Play speed boost sound when reaching high speed
         if (Math.abs(this.velocity.x) > this.maxSpeed * 0.8 && !this.speedBoostPlayed && this.isGrounded) {
@@ -924,6 +1219,14 @@ class Sonic {
         this.x += this.velocity.x * deltaTime * 0.06;
         this.y += this.velocity.y * deltaTime * 0.06;
         
+        // Prevent going off screen to the left
+        this.x = Math.max(0, this.x);
+        
+        // Prevent going past the goal (with some buffer)
+        if (game && game.levelLength) {
+            this.x = Math.min(this.x, game.levelLength - 100);
+        }
+        
         const wasGrounded = this.isGrounded;
         this.isGrounded = false;
         if (this.y + this.height >= GROUND_HEIGHT) {
@@ -943,16 +1246,19 @@ class Sonic {
                 this.x + this.width > platform.x &&
                 this.y + this.height > platform.y &&
                 this.y + this.height < platform.y + platform.height + this.velocity.y) {
+                
                 this.y = platform.y - this.height;
                 this.velocity.y = 0;
                 this.isGrounded = true;
                 this.spinning = false;
                 this.springLaunched = false; // Clear spring launch on landing
+                
                 if (!wasGrounded && game && game.audioManager) {
                     game.audioManager.playLand();
                 }
             }
         });
+        
         
         if (wasGrounded && !this.isGrounded) {
             this.coyoteTime = 0;
@@ -1131,6 +1437,12 @@ class Ring {
         this.maxLifetime = 5000; // 5 seconds
         this.flickerStart = 3000; // Start flickering after 3 seconds
         this.collectDelay = 0; // Delay before ring can be collected
+        
+        // Special ring properties
+        this.type = 'normal'; // normal, super, magnet
+        this.value = 1; // How many rings this is worth
+        this.glowRadius = 0; // For super rings
+        this.magnetRadius = 0; // For magnet rings
     }
     
     update(deltaTime) {
@@ -1177,18 +1489,59 @@ class Ring {
         ctx.translate(this.x + this.width / 2, this.y + this.height / 2);
         ctx.rotate(this.rotation);
         
-        // Add glow effect for bouncing rings
+        // Add glow effect based on ring type
         if (this.bouncing) {
             ctx.shadowColor = '#ffdd00';
             ctx.shadowBlur = 10;
+        } else if (this.type === 'super') {
+            ctx.shadowColor = '#ff00ff';
+            ctx.shadowBlur = this.glowRadius || 30;
+        } else if (this.type === 'magnet') {
+            ctx.shadowColor = '#00ffff';
+            ctx.shadowBlur = 20;
         }
         
-        // Draw ring (same style for both normal and bouncing)
-        ctx.strokeStyle = '#ffdd00';
-        ctx.lineWidth = this.bouncing ? 5 : 4;
-        ctx.beginPath();
-        ctx.arc(0, 0, this.width / 2, 0, Math.PI * 2);
-        ctx.stroke();
+        // Draw ring with different styles for different types
+        if (this.type === 'super') {
+            // Super ring - larger and purple
+            ctx.strokeStyle = '#ff00ff';
+            ctx.lineWidth = 6;
+            ctx.beginPath();
+            ctx.arc(0, 0, this.width / 2 * 1.5, 0, Math.PI * 2);
+            ctx.stroke();
+            
+            // Inner ring
+            ctx.strokeStyle = '#ffdd00';
+            ctx.lineWidth = 3;
+            ctx.beginPath();
+            ctx.arc(0, 0, this.width / 2, 0, Math.PI * 2);
+            ctx.stroke();
+        } else if (this.type === 'magnet') {
+            // Magnet ring - cyan with magnetic field effect
+            ctx.strokeStyle = '#00ffff';
+            ctx.lineWidth = 5;
+            ctx.beginPath();
+            ctx.arc(0, 0, this.width / 2, 0, Math.PI * 2);
+            ctx.stroke();
+            
+            // Magnetic field lines
+            ctx.strokeStyle = 'rgba(0, 255, 255, 0.3)';
+            ctx.lineWidth = 1;
+            for (let i = 0; i < 4; i++) {
+                const angle = (Math.PI / 2) * i + this.rotation;
+                ctx.beginPath();
+                ctx.moveTo(Math.cos(angle) * 15, Math.sin(angle) * 15);
+                ctx.lineTo(Math.cos(angle) * 25, Math.sin(angle) * 25);
+                ctx.stroke();
+            }
+        } else {
+            // Normal ring
+            ctx.strokeStyle = '#ffdd00';
+            ctx.lineWidth = this.bouncing ? 5 : 4;
+            ctx.beginPath();
+            ctx.arc(0, 0, this.width / 2, 0, Math.PI * 2);
+            ctx.stroke();
+        }
         
         ctx.restore();
     }
@@ -1559,13 +1912,23 @@ class Spring {
         this.compressed = false;
         this.compressionTimer = 0;
         this.cooldown = false;
+        this.type = 'vertical'; // Default type
+        this.force = 20;
+        this.forceX = 0;
+        this.forceY = 20;
     }
     
     activate() {
+        if (this.cooldown) return false;
+        
         this.compressed = true;
         this.compressionTimer = 200;
         this.cooldown = true;
-        setTimeout(() => { this.cooldown = false; }, 500);
+        setTimeout(() => { 
+            this.cooldown = false; 
+        }, this.cooldownTime || 100);
+        
+        return true;
     }
     
     update(deltaTime) {
@@ -1578,12 +1941,107 @@ class Spring {
     }
     
     render(ctx) {
-        ctx.fillStyle = '#ff0000';
         const height = this.compressed ? this.height / 2 : this.height;
+        
+        // Different colors for different types
+        switch (this.type) {
+            case 'vertical':
+                ctx.fillStyle = '#ff0000';
+                break;
+            case 'horizontal':
+                ctx.fillStyle = '#00ff00';
+                break;
+            case 'diagonal':
+                ctx.fillStyle = '#ff8800';
+                break;
+            default:
+                ctx.fillStyle = '#ff0000';
+        }
+        
         ctx.fillRect(this.x, this.y + (this.height - height), this.width, height);
+        
+        // Draw arrow indicator for direction
+        ctx.strokeStyle = '#ffffff';
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        
+        const centerX = this.x + this.width / 2;
+        const centerY = this.y + this.height / 2;
+        
+        if (this.type === 'vertical') {
+            // Up arrow
+            ctx.moveTo(centerX, centerY - 5);
+            ctx.lineTo(centerX - 5, centerY);
+            ctx.moveTo(centerX, centerY - 5);
+            ctx.lineTo(centerX + 5, centerY);
+        } else if (this.type === 'horizontal') {
+            // Right arrow
+            const dir = this.forceX > 0 ? 1 : -1;
+            ctx.moveTo(centerX + dir * 5, centerY);
+            ctx.lineTo(centerX, centerY - 5);
+            ctx.moveTo(centerX + dir * 5, centerY);
+            ctx.lineTo(centerX, centerY + 5);
+        } else if (this.type === 'diagonal') {
+            // Diagonal arrow
+            const dirX = this.forceX > 0 ? 1 : -1;
+            ctx.moveTo(centerX + dirX * 5, centerY - 5);
+            ctx.lineTo(centerX, centerY);
+            ctx.moveTo(centerX + dirX * 5, centerY - 5);
+            ctx.lineTo(centerX + dirX * 3, centerY + 2);
+        }
+        
+        ctx.stroke();
         
         ctx.fillStyle = '#ffff00';
         ctx.fillRect(this.x + 5, this.y + (this.height - height), this.width - 10, 5);
+    }
+}
+
+class SpeedBooster {
+    constructor(x, y) {
+        this.x = x;
+        this.y = y;
+        this.width = 60;
+        this.height = 20;
+        this.used = false;
+        this.cooldown = 0;
+    }
+    
+    update(deltaTime) {
+        if (this.cooldown > 0) {
+            this.cooldown -= deltaTime;
+            if (this.cooldown <= 0) {
+                this.used = false;
+            }
+        }
+    }
+    
+    activate() {
+        if (this.used) return false;
+        this.used = true;
+        this.cooldown = 500; // Half second cooldown
+        return true;
+    }
+    
+    render(ctx) {
+        // Draw the green speed booster pad
+        ctx.fillStyle = this.used ? '#006600' : '#00ff00';
+        ctx.fillRect(this.x, this.y, this.width, this.height);
+        
+        // Draw arrow indicators
+        ctx.strokeStyle = '#ffffff';
+        ctx.lineWidth = 2;
+        const centerY = this.y + this.height / 2;
+        
+        // Draw three arrows pointing right
+        for (let i = 0; i < 3; i++) {
+            const arrowX = this.x + 8 + (i * 12);
+            ctx.beginPath();
+            ctx.moveTo(arrowX, centerY - 4);
+            ctx.lineTo(arrowX + 6, centerY);
+            ctx.lineTo(arrowX, centerY + 4);
+            ctx.stroke();
+        }
     }
 }
 
